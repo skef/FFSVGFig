@@ -7,6 +7,9 @@ A tool, still under development, to generate figures for FontForge documentation
 2. The `csscompressor` python package
 3. The `svgwrite` python package
 
+Note: This may eventually be restructured as a python package but for now it is
+a bare script. 
+
 ## Options
 
 The script must be called with two positional arguments, the first being the
