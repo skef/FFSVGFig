@@ -60,15 +60,19 @@ changed with just a text editor.
 
 The tool produces a relatively faithful version of quadratic or cubic contours.
 The soft "interior" contour lines (usually visible at high magnification) are
-not included.  Selected on-curve points are displayed as selected so one should
-be careful about which points are selected before saving the font file. (The
-script is also capable of displaying selected off-curve points, but because
-FontForge does not save the selection state of those points there is currently
-no interface for that. However, it would be relatively easy to add a Tools menu
+not included. Closed contours are shown with a slightly green fill for clarity
+while open contours are not filled. This fill can currently only be changed by
+editing the style embedded in the script.
+
+Selected on-curve points are displayed as selected so one should be careful
+about which points are selected before saving the font file. (The script is
+also capable of displaying selected off-curve points, but because FontForge
+does not save the selection state of those points there is currently no
+interface for that. However, it would be relatively easy to add a Tools menu
 item to generate from the UI to get around that problem if and when needed.)
 
-The tool does not currently display Spiro contours but they would not
-be very difficult to add. Point and contour names are also not yet displayed,
-nor is the Guide layer or any metric line. There is currently no way of including
-a false mouse pointer for illustrative purposes, nor is there any provision for
+The tool does not currently display Spiro contours but they would not be very
+difficult to add. Point and contour names are also not yet displayed, nor is
+the Guide layer or any metric line. There is currently no way of including a
+false mouse pointer for illustrative purposes, nor is there any provision for
 animation. 
