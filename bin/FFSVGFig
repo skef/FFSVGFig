@@ -1,0 +1,384 @@
+#!/usr/bin/env python
+
+import math
+import sys
+import argparse
+import psMat
+import fontforge
+import csscompressor
+import svgwrite
+
+class FFSVGFig:
+    mstyle = """
+.ff_main_open {
+  stroke-width: 2;
+  stroke: rgb(40%,0%,0%);
+  fill: none;
+}
+
+.ff_main_closed {
+  stroke-width: 2;
+  stroke: black;
+  fill: limegreen;
+  fill-opacity: .07;
+}
+
+.ff_main_background {
+  stroke-width: 2;
+  stroke: rgb(0%,50%,0%);
+  fill: none;
+}
+
+.ff_main_deleted {
+  stroke-width: 2;
+  stroke: rgb(50%,50%,50%);
+  stroke-dasharray: 4;
+  fill: none;
+}
+
+.ff_offp .ff_offp_pre {
+  stroke-width: 1;
+  stroke: rgb(100%,0%,0%);
+}
+
+.ff_offp .ff_offp_post {
+  stroke-width: 1;
+  stroke: rgb(0%,44%,56%);
+}
+
+/* Ordering is important for the point rules */
+.ff_onp {
+  stroke-width: 0;
+  fill: rgb(100%,0,0);
+  fill-opacity: .53;
+}
+
+.ff_onp.ff_extremum {
+  fill: rgb(75%,0%,50%);
+}
+
+.ff_onp.ff_first {
+  fill: rgb(44%,44%,0%);
+}
+
+.ff_onp.ff_interpolated {
+  stroke-width: 1;
+  stroke: rgb(100%,0%,0%);
+  stroke-opacity: .53;
+  fill: none;
+}
+
+.ff_onp.ff_extremum.ff_interpolated {
+  stroke: rgb(75%,0%,50%);
+}
+
+.ff_onp.ff_first.ff_interpolated {
+  stroke: rgb(44%,44%,0%);
+}
+
+.ff_onp.ff_selected {
+  stroke: rgb(78%,78%,0%);
+}
+
+.ff_arrow {
+  stroke-width: 1;
+  fill: none;
+  stroke: rgb(44%,44%,0%);
+}
+
+.ff_label {
+  font-size: 20px;
+  font-family: 'DejaVu Sans';
+  text-align:center;
+}
+    """
+    main_class = { 'open': 'ff_main_open', 'closed': 'ff_main_closed', 'background': 'ff_main_background' }
+    point_shape = {
+            fontforge.splineCurve: svgwrite.shapes.Circle(r=7,class_='ff_onp ff_curve'),
+            fontforge.splineHVCurve: svgwrite.shapes.Polygon([(-7,0),(0,7),(7,0),(0,-7)],class_='ff_onp ff_hwcurve'),
+            fontforge.splineCorner: svgwrite.shapes.Rect(insert=(-6,-6), size=(12,12),class_='ff_onp ff_corner'),
+            fontforge.splineTangent: svgwrite.shapes.Polygon([(0,-9),(9,0),(0,9)],class_='ff_onp ff_tangent')
+    }
+    point_rotate = { fontforge.splineTangent: True }
+    p_arrow = svgwrite.container.Group()
+    p_arrow.add(svgwrite.shapes.Line(start=(0,-10),end=(10,-10),class_='ff_arrow'))
+    p_arrow.add(svgwrite.shapes.Line(start=(10,-10),end=(7,-7),class_='ff_arrow'))
+    p_arrow.add(svgwrite.shapes.Line(start=(10,-10),end=(7,-13),class_='ff_arrow'))
+    off_curve = [
+        svgwrite.container.Group(),
+        svgwrite.container.Group(class_='ff_selected'),
+        svgwrite.container.Group(class_='ff_selected')
+    ]
+    offsz = 8
+    off_curve[0].add(svgwrite.shapes.Line(start=(-offsz,-offsz),end=(offsz,offsz),class_='ff_off_curve_x'))
+    off_curve[0].add(svgwrite.shapes.Line(start=(-offsz,offsz),end=(offsz,-offsz),class_='ff_off_curve_x'))
+
+    off_curve[1].add(svgwrite.shapes.Rect(insert=(-offsz,-offsz),size=(2*offsz,2*offsz),class_='ff_off_curve_back'))
+    off_curve[1].add(svgwrite.shapes.Line(start=(-offsz,-offsz),end=(offsz,offsz),class_='ff_off_curve_x'))
+    off_curve[1].add(svgwrite.shapes.Line(start=(-offsz,offsz),end=(offsz,-offsz),class_='ff_off_curve_x'))
+
+    offsz = 5
+    off_curve[2].add(svgwrite.shapes.Rect(insert=(-offsz,-offsz),size=(2*offsz,2*offsz),class_='ff_off_curve_back'))
+    off_curve[2].add(svgwrite.shapes.Line(start=(-offsz,-offsz),end=(offsz,offsz),class_='ff_off_curve_x'))
+    off_curve[2].add(svgwrite.shapes.Line(start=(-offsz,offsz),end=(offsz,-offsz),class_='ff_off_curve_x'))
+    formats = { 'M': 'M{} {}', 'L': 'L{} {}', 'Q': 'Q{} {} {} {}', 'C': 'C{} {} {} {} {} {}' }
+
+
+    def __init__(self, g, args):
+        self.glyph = g
+        self.args = args
+        self.margin = args.margin
+        self.cssname = '../ff_svg_fig.css'
+        self.ascent = g.font.ascent
+        self.postscale = 1
+
+    @staticmethod
+    def add_class(o, c):
+        try:
+            cls = o.__getitem__('class')
+        except KeyError:
+            cls = False
+        if cls:
+            c = cls + ' ' + c
+        o.__setitem__('class', c)
+
+    @staticmethod
+    def on_p_is_extreme(c, i):
+        l = len(c)
+        if i == 0 and l==1:
+            return True
+        sp = c[i]
+        ncp = c[(i+1)%l]
+        nncp = c[(i+2)%l]
+        if ncp.on_curve and nncp.on_curve:
+            nncp = ncp
+        pcp = c[(i-1+l)%l]
+        ppcp = c[(i-2+l)%l]
+        if pcp.on_curve and ppcp.on_curve:
+            ppcp = pcp
+        if ((( ncp.x<sp.x or (ncp.x==sp.x and nncp.x<sp.x)) and (pcp.x<sp.x or (pcp.x==sp.x and ppcp.x<sp.x))) or ((ncp.x>sp.x or (ncp.x==sp.x and nncp.x>sp.x)) and (pcp.x>sp.x or (pcp.x==sp.x and ppcp.x>sp.x))) or (( ncp.y<sp.y or (ncp.y==sp.y and nncp.y<sp.y)) and (pcp.y<sp.y or (pcp.y==sp.y and ppcp.y<sp.y))) or ((ncp.y>sp.y or (ncp.y==sp.y and nncp.y>sp.y)) and (pcp.y>sp.y or (pcp.y==sp.y and ppcp.y>sp.y)))):
+            return True
+
+        if ( not ncp.on_curve and not pcp.on_curve and ((sp.x==ncp.x and sp.x==pcp.x) or (sp.y==ncp.y and sp.y==pcp.y)) ):
+            return True
+
+        return False
+
+    @staticmethod
+    def merge_bb(bb1, bb2):
+        if not bb1:
+            return bb2
+        return (min(bb1[0],bb2[0]), min(bb1[1],bb2[1]), max(bb1[2],bb2[2]), max(bb1[3],bb2[3]))
+
+    @staticmethod
+    def trans_bb(bb, tm):
+        p1 = fontforge.point(bb[0],bb[1])
+        p1.transform(tm)
+        p2 = fontforge.point(bb[2],bb[3])
+        p2.transform(tm)
+        return (min(p1.x,p2.x), min(p1.y,p2.y), max(p1.x,p2.x), max(p1.y,p2.y))
+
+    def build_bb(self):
+        bb = None
+        for c in self.glyph.foreground:
+            bb = FFSVGFig.merge_bb(bb, c.boundingBox())
+
+        if self.args.background:
+            for c in self.glyph.background:
+                bb = FFSVGFig.merge_bb(bb, c.boundingBox())
+        self.bb = bb
+
+    def calc_scales(self):
+        rw = self.bb[2] - self.bb[0]
+        if self.args.width:
+            w = self.args.width - 2*self.margin
+        else:
+            w = rw
+        total_sf = w/rw
+        sf = total_sf / self.args.ptmag
+        self.postscale = self.args.ptmag
+        self.tr = psMat.compose(psMat.translate(0, -self.ascent),psMat.scale(sf,-sf))
+
+    def do_on_p(self, c, i):
+        l = len(c)
+        ff_p = c[i]
+        ptype = ff_p.type
+        px = ff_p.x
+        py = ff_p.y
+
+        shape = FFSVGFig.point_shape[ptype].copy()
+        shape.translate(px,py)
+        if FFSVGFig.point_rotate.get(ptype, False):
+            cpi = (i+1)%l
+            if (c[cpi].on_curve or (c[cpi].x == ff_p.x and c[cpi].y == ff_p.y)):
+                cpi = (i-1+l)%l
+            angle = math.degrees(math.atan2(py-c[cpi].y,px-c[cpi].x)) + 180
+            shape.rotate(angle)
+
+        cls = []
+        if ff_p.selected:
+            cls.append('ff_selected')
+        if i==0:
+            cls.append('ff_first')
+        if ff_p.interpolated:
+            cls.append('ff_interpolated')
+        if FFSVGFig.on_p_is_extreme(c, i):
+            cls.append('ff_extremum')
+        if len(cls)>0:
+            FFSVGFig.add_class(shape, ' '.join(cls))
+
+        if i!=0 or l==1:
+            return shape
+
+        # Add arrow to first point
+        j = 1
+        while j < l:
+            if c[i].x != c[j].x or c[i].y != c[j].y:
+                break
+            j += 1
+        if j == l:
+            return shape
+
+        grp = svgwrite.container.Group()
+        grp.add(shape)
+        angle = math.degrees(math.atan2(c[j].y-py,c[j].x-px))
+        ar = FFSVGFig.p_arrow.copy()
+        ar.translate(px,py)
+        ar.rotate(angle)
+        grp.add(ar)
+        return grp
+
+    def off_x(self, px, py, cls, sel=0):
+        shape = FFSVGFig.off_curve[sel].copy()
+        shape.translate(px, py)
+        FFSVGFig.add_class(shape, cls)
+        return shape
+
+    def do_off_p(self, c, i, t):
+        grp = svgwrite.container.Group(class_='ff_offp')
+        offp = c[i]
+        l = len(c)
+        if t==0:
+            onp = c[(i-1+l)%l]
+            grp.add(svgwrite.shapes.Line(start=(onp.x,onp.y), end=(offp.x,offp.y),class_='ff_offp_post'))
+            onp = c[(i+1)%l]
+            grp.add(svgwrite.shapes.Line(start=(onp.x,onp.y), end=(offp.x,offp.y),class_='ff_offp_pre'))
+            grp.add(self.off_x(offp.x, offp.y, 'ff_offp_pre', offp.selected))
+        elif t==-1:
+            onp = c[(i-1+l)%l]
+            grp.add(svgwrite.shapes.Line(start=(onp.x,onp.y), end=(offp.x,offp.y),class_='ff_offp_post'))
+            grp.add(self.off_x(offp.x, offp.y, 'ff_offp_post', offp.selected))
+        elif t==1:
+            onp = c[(i+1)%l]
+            grp.add(svgwrite.shapes.Line(start=(onp.x,onp.y), end=(offp.x,offp.y),class_='ff_offp_pre'))
+            grp.add(self.off_x(offp.x, offp.y, 'ff_offp_pre', offp.selected))
+        return grp
+
+    def build_contour(self, c, key, decorate=True):
+        c.transform(self.tr)
+        i = 0
+        l = len(c)
+        while i<l:
+            if i==0:
+                oc = i
+                self.ps[key] += FFSVGFig.formats['M'].format(c[i].x, c[i].y)
+                i += 1
+            elif c[i].on_curve:
+                oc = i
+                self.ps[key] += FFSVGFig.formats['L'].format(c[i].x, c[i].y)
+                i += 1
+            elif c.is_quadratic:
+                oc = (i+1)%l
+                self.ps[key] += FFSVGFig.formats['Q'].format(c[i].x, c[i].y, c[oc].x, c[oc].y)
+                if decorate:
+                    self.cpts.append(self.do_off_p(c, i, 0))
+                i += 2
+            else:
+                oc = (i+2)%l
+                self.ps[key] += FFSVGFig.formats['C'].format(c[i].x, c[i].y, c[i+1].x, c[i+1].y, c[oc].x, c[oc].y)
+                if decorate:
+                    self.cpts.append(self.do_off_p(c, i, -1))
+                    self.cpts.append(self.do_off_p(c, i+1, 1))
+                i += 3
+            if decorate:
+                self.pts.append(self.do_on_p(c, oc))
+        if c.closed:
+            self.ps[key] += ' z'
+
+    def build(self):
+        self.build_bb()
+        self.calc_scales()
+        self.ps = { 'open': '', 'closed': '', 'background': '' }
+        self.pts = []
+        self.cpts = []
+
+        for c in self.glyph.foreground:
+            self.build_contour(c, 'closed' if c.closed else 'open')
+
+        if self.args.background:
+            for c in self.glyph.background:
+                self.build_contour(c, 'background', False)
+       
+    def generate(self):
+        n = self.glyph.glyphname
+        if self.args.basename != None:
+            n = self.args.basename
+        dwg = svgwrite.Drawing(n + '.svg')
+
+        if self.args.extstyle:
+            dwg.add_stylesheet(self.args.extstyle, "FontForge SVG stylesheet")
+        else:
+            st = FFSVGFig.mstyle
+            if not self.args.pretty:
+                st = csscompressor.compress(st)
+            dwg.defs.add(dwg.style(st))
+
+        gr = svgwrite.container.Group()
+
+        for cpt in self.cpts:
+            gr.add(cpt)
+
+        for pt in self.pts:
+            gr.add(pt)
+
+        for k in ('background', 'closed', 'open'):
+            if len(self.ps[k]) > 0:
+                gr.add(svgwrite.path.Path(d=self.ps[k],class_=FFSVGFig.main_class[k]))
+
+        if self.postscale != 1:
+            gr.scale(self.postscale)
+        dwg.add(gr)
+        margin = self.margin
+        bb = FFSVGFig.trans_bb(self.bb, psMat.compose(self.tr, psMat.scale(self.postscale)))
+        #dwg.translate(.5)
+        dwg.viewbox(round(bb[0]-margin),round(bb[1]-margin),round(bb[2]-bb[0]+2*margin),round(bb[3]-bb[1]+2*margin))
+
+        dwg.save(self.args.pretty)
+
+    @staticmethod
+    def main():
+        parser = argparse.ArgumentParser(description='FFSVGFig: Create figures from FontForge glyphs for documentation')
+        parser.add_argument('-w', '--width', type=int, help="SVG output width")
+        parser.add_argument('-m', '--margin', type=int, default=20, help='viewBox margin')
+        parser.add_argument('-t', '--ptmag', type=float, default=1.0, help="FontForge point magnification")
+        parser.add_argument('-b', '--background', action='store_true', help='Include background layer')
+        parser.add_argument('-n', '--basename', metavar='(filename)', help='Base name of output file (default is glyph name)')
+        parser.add_argument('-p', '--pretty', action='store_true', help='Save legible output')
+        parser.add_argument('-e', '--extstyle', metavar='(url)', help='Link to stylesheet (no inline style)')
+        parser.add_argument('font', help='Font file')
+        parser.add_argument('glyph_name', help='Glyph name')
+
+        args = parser.parse_args()
+
+        f = fontforge.open(args.font)
+        g = f[args.glyph_name]
+        ffsvg = FFSVGFig(g, args)
+        ffsvg.build()
+        ffsvg.generate()
+
+
+if __name__ == '__main__':
+    if fontforge.hasUserInterface():
+        FFSVGFig.registerMenus()
+    else:
+        FFSVGFig.main()
